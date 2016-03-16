@@ -8,9 +8,12 @@ import org.junit.rules.ExternalResource;
 import javax.jcr.Repository;
 import java.net.UnknownHostException;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static java.lang.Thread.sleep;
 import static org.apache.jackrabbit.cluster.test.EmbeddedMongoTestUtil.mongoClient;
 import static org.apache.jackrabbit.cluster.test.MongoTestUtil.databaseExist;
+import static org.apache.jackrabbit.cluster.test.MongoTestUtil.dropDatabase;
+import static org.apache.jackrabbit.cluster.test.OakTestUtil.connect;
 
 /**
  * Created by Dominik Foerderreuther <df@adobe.com> on 02/03/16.
@@ -27,14 +30,14 @@ public class OakClusterRepository extends ExternalResource {
 
         MongoClient clientOne = mongoClient();
 
-        MongoTestUtil.dropDatabase(clientOne, DBNAME);
-        Preconditions.checkArgument(!databaseExist(clientOne, DBNAME));
+        dropDatabase(clientOne, DBNAME);
+        checkArgument(!databaseExist(clientOne, DBNAME));
     }
 
     public Repository repository() throws OakClusterRepositoryException {
         Repository repository = null;
         try {
-            repository = OakTestUtil.connect(mongoClient(), DBNAME);
+            repository = connect(mongoClient(), DBNAME);
             try {
                 sleep(2000);
             } catch (InterruptedException e) {

@@ -16,18 +16,19 @@
  */
 package org.apache.jackrabbit.oak.plugins.document;
 
-import java.util.concurrent.Callable;
-import java.util.concurrent.locks.ReadWriteLock;
-
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
-
 import org.apache.jackrabbit.oak.api.CommitFailedException;
 import org.apache.jackrabbit.oak.spi.commit.ChangeDispatcher;
 import org.apache.jackrabbit.oak.spi.commit.CommitHook;
 import org.apache.jackrabbit.oak.spi.commit.CommitInfo;
 import org.apache.jackrabbit.oak.spi.state.AbstractNodeStoreBranch;
 import org.apache.jackrabbit.oak.spi.state.NodeState;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.annotation.CheckForNull;
+import javax.annotation.Nonnull;
+import java.util.concurrent.Callable;
+import java.util.concurrent.locks.ReadWriteLock;
 
 import static com.google.common.base.Preconditions.checkState;
 import static org.apache.jackrabbit.oak.api.CommitFailedException.MERGE;
@@ -40,7 +41,9 @@ class DocumentNodeStoreBranch
         extends AbstractNodeStoreBranch<DocumentNodeStore, DocumentNodeState> {
     private static final int MAX_LOCK_TRY_TIME_MULTIPLIER = Integer.getInteger("oak.maxLockTryTimeMultiplier", 30);
 
-    /** Lock for coordinating concurrent merge operations */
+    /**
+     * Lock for coordinating concurrent merge operations
+     */
     private final ReadWriteLock mergeLock;
 
     DocumentNodeStoreBranch(DocumentNodeStore store,
@@ -64,7 +67,7 @@ class DocumentNodeStoreBranch
 
     @Override
     protected DocumentNodeState rebase(DocumentNodeState branchHead,
-                                    DocumentNodeState base) {
+                                       DocumentNodeState base) {
         return store.getRoot(store.rebase(branchHead.getRevision(), base.getRevision()));
     }
 
@@ -77,18 +80,18 @@ class DocumentNodeStoreBranch
     @Nonnull
     @Override
     protected DocumentNodeState reset(@Nonnull DocumentNodeState branchHead,
-                                   @Nonnull DocumentNodeState ancestor) {
+                                      @Nonnull DocumentNodeState ancestor) {
         return store.getRoot(
                 store.reset(
-                        branchHead.getRevision(), 
+                        branchHead.getRevision(),
                         ancestor.getRevision(),
                         this));
     }
 
     @Override
     protected DocumentNodeState persist(final NodeState toPersist,
-                                     final DocumentNodeState base,
-                                     final CommitInfo info) {
+                                        final DocumentNodeState base,
+                                        final CommitInfo info) {
         return persist(new Changes() {
             @Override
             public void with(Commit c) {
@@ -100,8 +103,8 @@ class DocumentNodeStoreBranch
 
     @Override
     protected DocumentNodeState copy(final String source,
-                                  final String target,
-                                  DocumentNodeState base) {
+                                     final String target,
+                                     DocumentNodeState base) {
         final DocumentNodeState src = store.getNode(source, base.getRevision());
         checkState(src != null, "Source node %s@%s does not exist",
                 source, base.getRevision());
@@ -115,8 +118,8 @@ class DocumentNodeStoreBranch
 
     @Override
     protected DocumentNodeState move(final String source,
-                                  final String target,
-                                  DocumentNodeState base) {
+                                     final String target,
+                                     DocumentNodeState base) {
         final DocumentNodeState src = store.getNode(source, base.getRevision());
         checkState(src != null, "Source node %s@%s does not exist",
                 source, base.getRevision());
@@ -140,6 +143,8 @@ class DocumentNodeStoreBranch
         return new CommitFailedException(type, 1, msg, cause);
     }
 
+    private static final Logger log = LoggerFactory.getLogger(DocumentNodeStoreBranch.class);
+
     @Nonnull
     @Override
     public NodeState merge(@Nonnull CommitHook hook, @Nonnull CommitInfo info)
@@ -153,7 +158,12 @@ class DocumentNodeStoreBranch
         }
         // retry with exclusive lock, blocking other
         // concurrent writes
-        return merge0(hook, info, mergeLock.writeLock());
+        try {
+            return merge0(hook, info, mergeLock.writeLock());
+        } catch (CommitFailedException e) {
+            log.error("merge, failed");
+            throw e;
+        }
     }
 
     //------------------------------< internal >--------------------------------
@@ -169,7 +179,7 @@ class DocumentNodeStoreBranch
     /**
      * Persist some changes on top of the given base state.
      *
-     * @param op the changes to persist.
+     * @param op   the changes to persist.
      * @param base the base state.
      * @param info the commit info.
      * @return the result state.
@@ -207,7 +217,7 @@ class DocumentNodeStoreBranch
     /**
      * Returns the branch instance in use by the current thread or
      * <code>null</code> if there is none.
-     * <p>
+     * <p/>
      * See also {@link AbstractNodeStoreBranch#withCurrentBranch(Callable)}.
      *
      * @return

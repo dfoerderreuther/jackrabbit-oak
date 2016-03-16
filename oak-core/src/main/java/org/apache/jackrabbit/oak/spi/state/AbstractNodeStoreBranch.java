@@ -16,6 +16,18 @@
  */
 package org.apache.jackrabbit.oak.spi.state;
 
+import com.google.common.collect.Maps;
+import org.apache.jackrabbit.oak.api.CommitFailedException;
+import org.apache.jackrabbit.oak.commons.PathUtils;
+import org.apache.jackrabbit.oak.spi.commit.ChangeDispatcher;
+import org.apache.jackrabbit.oak.spi.commit.CommitHook;
+import org.apache.jackrabbit.oak.spi.commit.CommitInfo;
+import org.apache.jackrabbit.oak.util.PerfLogger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.annotation.CheckForNull;
+import javax.annotation.Nonnull;
 import java.util.Random;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentMap;
@@ -26,28 +38,12 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.apache.jackrabbit.oak.api.CommitFailedException.MERGE;
 import static org.apache.jackrabbit.oak.api.CommitFailedException.OAK;
-import static org.apache.jackrabbit.oak.commons.PathUtils.elements;
-import static org.apache.jackrabbit.oak.commons.PathUtils.getName;
-import static org.apache.jackrabbit.oak.commons.PathUtils.getParentPath;
-
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
-
-import org.apache.jackrabbit.oak.api.CommitFailedException;
-import org.apache.jackrabbit.oak.commons.PathUtils;
-import org.apache.jackrabbit.oak.spi.commit.ChangeDispatcher;
-import org.apache.jackrabbit.oak.spi.commit.CommitHook;
-import org.apache.jackrabbit.oak.spi.commit.CommitInfo;
-
-import com.google.common.collect.Maps;
-import org.apache.jackrabbit.oak.util.PerfLogger;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import static org.apache.jackrabbit.oak.commons.PathUtils.*;
 
 /**
  * A base implementation of a node store branch, which supports partially
  * persisted branches.
- * <p>
+ * <p/>
  * This implementation keeps changes in memory up to a certain limit and writes
  * them back to the underlying branch when the limit is exceeded.
  */
@@ -64,10 +60,14 @@ public abstract class AbstractNodeStoreBranch<S extends NodeStore, N extends Nod
 
     protected static final ConcurrentMap<Thread, AbstractNodeStoreBranch> BRANCHES = Maps.newConcurrentMap();
 
-    /** The underlying store to which this branch belongs */
+    /**
+     * The underlying store to which this branch belongs
+     */
     protected final S store;
 
-    /** The dispatcher to report changes */
+    /**
+     * The dispatcher to report changes
+     */
     protected final ChangeDispatcher dispatcher;
 
     protected final long maximumBackoff;
@@ -80,6 +80,7 @@ public abstract class AbstractNodeStoreBranch<S extends NodeStore, N extends Nod
     /**
      * State of the this branch. Either {@link Unmodified}, {@link InMemory}, {@link Persisted}
      * or {@link Merged}.
+     *
      * @see BranchState
      */
     private BranchState branchState;
@@ -126,7 +127,7 @@ public abstract class AbstractNodeStoreBranch<S extends NodeStore, N extends Nod
      * Rebases the branch head to the given base.
      *
      * @param branchHead the head state of a branch.
-     * @param base the new base state for the branch.
+     * @param base       the new base state for the branch.
      * @return the rebased branch head.
      */
     protected abstract N rebase(N branchHead, N base);
@@ -135,10 +136,10 @@ public abstract class AbstractNodeStoreBranch<S extends NodeStore, N extends Nod
      * Merges the branch head and returns the result state of the merge.
      *
      * @param branchHead the head of the branch to merge.
-     * @param info the commit info or <code>null</code> if none available.
+     * @param info       the commit info or <code>null</code> if none available.
      * @return the result state of the merge.
      * @throws CommitFailedException if the merge fails. The type of the
-     *                    exception will be {@code CommitFailedException.MERGE}.
+     *                               exception will be {@code CommitFailedException.MERGE}.
      */
     protected abstract N merge(N branchHead, CommitInfo info)
             throws CommitFailedException;
@@ -147,9 +148,9 @@ public abstract class AbstractNodeStoreBranch<S extends NodeStore, N extends Nod
      * Resets the branch head to the given ancestor on the same branch.
      *
      * @param branchHead the head of the branch to reset.
-     * @param ancestor the state of the branch to reset to.
+     * @param ancestor   the state of the branch to reset to.
      * @return the state of the reset branch. This is not necessarily the same
-     *         instance as {@code ancestor} but is guaranteed to be equal to it.
+     * instance as {@code ancestor} but is guaranteed to be equal to it.
      */
     @Nonnull
     protected abstract N reset(@Nonnull N branchHead, @Nonnull N ancestor);
@@ -157,14 +158,14 @@ public abstract class AbstractNodeStoreBranch<S extends NodeStore, N extends Nod
     /**
      * Persists the changes between <code>toPersist</code> and <code>base</code>
      * to the underlying store.
-     * <p>
+     * <p/>
      * While this method does not declare any exceptions to be thrown, an
      * implementation may still throw a runtime exception specific to the
      * concrete implementation of this node store branch.
      *
      * @param toPersist the state with the changes on top of <code>base</code>.
-     * @param base the base state.
-     * @param info the commit info or <code>null</code> if there is none.
+     * @param base      the base state.
+     * @param info      the commit info or <code>null</code> if there is none.
      * @return the state with the persisted changes.
      */
     protected abstract N persist(NodeState toPersist, N base, CommitInfo info);
@@ -172,18 +173,18 @@ public abstract class AbstractNodeStoreBranch<S extends NodeStore, N extends Nod
     /**
      * Perform a potentially optimized copy operation directly on the underlying
      * store.
-     * <p>
+     * <p/>
      * This base class ensures that preconditions are met (e.g. the source
      * exists), which means an implementation of this method just needs to
      * perform the copy operation.
-     * <p>
+     * <p/>
      * While this method does not declare any exceptions to be thrown, an
      * implementation may still throw a runtime exception specific to the
      * concrete implementation of this node store branch.
      *
      * @param source the source of the copy operation.
      * @param target the destination of the copy operation.
-     * @param base the base state.
+     * @param base   the base state.
      * @return the result of the copy operation.
      */
     protected abstract N copy(String source, String target, N base);
@@ -191,18 +192,18 @@ public abstract class AbstractNodeStoreBranch<S extends NodeStore, N extends Nod
     /**
      * Perform a potentially optimized move operation directly on the underlying
      * store.
-     * <p>
+     * <p/>
      * This base class ensures that preconditions are met (e.g. the source
      * exists), which means an implementation of this method just needs to
      * perform the move operation.
-     * <p>
+     * <p/>
      * While this method does not declare any exceptions to be thrown, an
      * implementation may still throw a runtime exception specific to the
      * concrete implementation of this node store branch.
      *
      * @param source the source of the move operation.
      * @param target the destination of the move operation.
-     * @param base the base state.
+     * @param base   the base state.
      * @return the result of the move operation.
      */
     protected abstract N move(String source, String target, N base);
@@ -212,7 +213,7 @@ public abstract class AbstractNodeStoreBranch<S extends NodeStore, N extends Nod
      * {@link CommitFailedException}.
      *
      * @param cause the unchecked exception cause.
-     * @param msg the message to use for the {@link CommitFailedException}.
+     * @param msg   the message to use for the {@link CommitFailedException}.
      * @return a {@link CommitFailedException}.
      */
     protected abstract CommitFailedException convertUnchecked(Exception cause,
@@ -245,7 +246,7 @@ public abstract class AbstractNodeStoreBranch<S extends NodeStore, N extends Nod
      *
      * @param source source path
      * @param target target path
-     * @return  {@code true} iff the move succeeded
+     * @return {@code true} iff the move succeeded
      * @throws IllegalStateException if the branch is already merged
      */
     public boolean move(String source, String target) {
@@ -277,7 +278,7 @@ public abstract class AbstractNodeStoreBranch<S extends NodeStore, N extends Nod
      *
      * @param source source path
      * @param target target path
-     * @return  {@code true} iff the copy succeeded
+     * @return {@code true} iff the copy succeeded
      * @throws IllegalStateException if the branch is already merged
      */
     public boolean copy(String source, String target) {
@@ -308,7 +309,7 @@ public abstract class AbstractNodeStoreBranch<S extends NodeStore, N extends Nod
     @Nonnull
     protected NodeState merge0(@Nonnull CommitHook hook,
                                @Nonnull CommitInfo info,
-                               @Nonnull Lock lock)
+                               @Nonnull final Lock lock)
             throws CommitFailedException {
         CommitFailedException ex = null;
         long time = System.currentTimeMillis();
@@ -388,7 +389,9 @@ public abstract class AbstractNodeStoreBranch<S extends NodeStore, N extends Nod
      * sub classes for permissible state transitions.
      */
     private abstract class BranchState {
-        /** Root state of the base revision of this branch */
+        /**
+         * Root state of the base revision of this branch
+         */
         protected N base;
 
         protected BranchState(N base) {
@@ -405,7 +408,7 @@ public abstract class AbstractNodeStoreBranch<S extends NodeStore, N extends Nod
             return p;
         }
 
-        N getBase(){
+        N getBase() {
             return base;
         }
 
@@ -419,7 +422,7 @@ public abstract class AbstractNodeStoreBranch<S extends NodeStore, N extends Nod
         /**
          * Runs the commit hook on the changes tracked with this branch state
          * merges the result.
-         * <p>
+         * <p/>
          * In addition to the {@link CommitFailedException}, an implementation
          * may also throw an unchecked exception when an error occurs while
          * persisting the changes. This exception is implementation specific
@@ -431,9 +434,9 @@ public abstract class AbstractNodeStoreBranch<S extends NodeStore, N extends Nod
          * @param lock the lock to acquire while performing the merge.
          * @return the result of the merge.
          * @throws CommitFailedException if a commit hook rejected the changes
-         *          or the actual merge operation failed. An implementation must
-         *          use the appropriate type in {@code CommitFailedException} to
-         *          indicate the cause of the exception.
+         *                               or the actual merge operation failed. An implementation must
+         *                               use the appropriate type in {@code CommitFailedException} to
+         *                               indicate the cause of the exception.
          */
         @Nonnull
         abstract NodeState merge(@Nonnull CommitHook hook,
@@ -444,12 +447,12 @@ public abstract class AbstractNodeStoreBranch<S extends NodeStore, N extends Nod
 
     /**
      * Instances of this class represent a branch whose base and head are the same.
-     * <p>
+     * <p/>
      * Transitions to:
      * <ul>
-     *     <li>{@link InMemory} on {@link #setRoot(NodeState)} if the new root differs
-     *         from the current base</li>.
-     *     <li>{@link Merged} on {@link BranchState#merge(CommitHook, CommitInfo, Lock)}</li>
+     * <li>{@link InMemory} on {@link #setRoot(NodeState)} if the new root differs
+     * from the current base</li>.
+     * <li>{@link Merged} on {@link BranchState#merge(CommitHook, CommitInfo, Lock)}</li>
      * </ul>
      */
     private class Unmodified extends BranchState {
@@ -493,17 +496,19 @@ public abstract class AbstractNodeStoreBranch<S extends NodeStore, N extends Nod
     /**
      * Instances of this class represent a branch whose base and head differ.
      * All changes are kept in memory.
-     * <p>
+     * <p/>
      * Transitions to:
      * <ul>
-     *     <li>{@link Unmodified} on {@link #setRoot(NodeState)} if the new root is the same
-     *         as the base of this branch or
-     *     <li>{@link Persisted} otherwise.
-     *     <li>{@link Merged} on {@link BranchState#merge(CommitHook, CommitInfo, Lock)}</li>
+     * <li>{@link Unmodified} on {@link #setRoot(NodeState)} if the new root is the same
+     * as the base of this branch or
+     * <li>{@link Persisted} otherwise.
+     * <li>{@link Merged} on {@link BranchState#merge(CommitHook, CommitInfo, Lock)}</li>
      * </ul>
      */
     private class InMemory extends BranchState {
-        /** Root state of the transient head. */
+        /**
+         * Root state of the transient head.
+         */
         private NodeState head;
 
         @Override
@@ -544,12 +549,12 @@ public abstract class AbstractNodeStoreBranch<S extends NodeStore, N extends Nod
         @Override
         @Nonnull
         NodeState merge(@Nonnull CommitHook hook,
-                        @Nonnull CommitInfo info,
-                        @Nonnull Lock lock)
+                        @Nonnull final CommitInfo info,
+                        final @Nonnull Lock lock)
                 throws CommitFailedException {
             checkNotNull(hook);
             checkNotNull(info);
-            Lock mergeLock = acquireMergeLock(lock);
+            final Lock mergeLock = acquireMergeLock(lock);
             try {
                 try {
                     rebase();
@@ -578,15 +583,17 @@ public abstract class AbstractNodeStoreBranch<S extends NodeStore, N extends Nod
     /**
      * Instances of this class represent a branch whose head is persisted to an
      * underlying branch in the {@code MicroKernel}.
-     * <p>
+     * <p/>
      * Transitions to:
      * <ul>
-     *     <li>{@link ResetFailed} on failed reset in {@link BranchState#merge(CommitHook, CommitInfo, Lock)}</li>
-     *     <li>{@link Merged} on successful {@link BranchState#merge(CommitHook, CommitInfo, Lock)}</li>
+     * <li>{@link ResetFailed} on failed reset in {@link BranchState#merge(CommitHook, CommitInfo, Lock)}</li>
+     * <li>{@link Merged} on successful {@link BranchState#merge(CommitHook, CommitInfo, Lock)}</li>
      * </ul>
      */
     private class Persisted extends BranchState {
-        /** Root state of the transient head, top of persisted branch. */
+        /**
+         * Root state of the transient head, top of persisted branch.
+         */
         private N head;
 
         @Override
@@ -694,7 +701,7 @@ public abstract class AbstractNodeStoreBranch<S extends NodeStore, N extends Nod
     /**
      * Instances of this class represent a branch that has already been merged.
      * All methods throw an {@code IllegalStateException}.
-     * <p>
+     * <p/>
      * Transitions to: none.
      */
     private class Merged extends BranchState {
@@ -735,7 +742,7 @@ public abstract class AbstractNodeStoreBranch<S extends NodeStore, N extends Nod
     /**
      * Instances of this class represent a branch with persisted changes and
      * a failed attempt to reset changes.
-     * <p>
+     * <p/>
      * Transitions to: none.
      */
     private class ResetFailed extends BranchState {

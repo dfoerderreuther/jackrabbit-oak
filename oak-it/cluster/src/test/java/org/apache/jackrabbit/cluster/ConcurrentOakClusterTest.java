@@ -43,8 +43,8 @@ public class ConcurrentOakClusterTest {
     @Test
     public void twoCluster50Threads() throws Exception {
         // given
-        final int concurrentWriters = 50;
-        final int numberOfWriteAttempts = 50;
+        final int concurrentWriters = 4;
+        final int numberOfWriteAttempts = 2000;
 
         log.info(format("Test Oak-Cluster with two repository-nodes and %d concurrent writers (each with %d write attempts)", concurrentWriters, numberOfWriteAttempts));
 
@@ -135,7 +135,7 @@ public class ConcurrentOakClusterTest {
                     session.save();
                     session.logout();
                 } catch (RepositoryException e) {
-                    log.error(format("Exception during save operation %s", e.getMessage()));
+                    log.error(format("Exception during save operation %s", e.getMessage()), e);
                     //log.error(format("Exception during save operation %s, %s", e.getMessage(), e.getCause().getCause().getMessage()));
                 }
             }

@@ -39,6 +39,7 @@ public class OakTestUtil {
                 .setMongoDB(db)
                 //.setLogging(true)
                 .setAsyncDelay(100)
+
                 .getNodeStore();
 
         //log.info(ns.getClusterInfo());

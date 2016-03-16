@@ -6,7 +6,8 @@
     <appender name="console-appender" class="org.apache.log4j.ConsoleAppender">
         <param name="Target" value="System.out"/>
         <layout class="com.jcabi.log.MulticolorLayout">
-            <param name="ConversionPattern" value="[%color{%p}] ..%c{2}.%M:%L - %m%n"/>
+            <!--<param name="ConversionPattern" value="[%color{%p}] %t ..%c{2}.%M:%L - %m%n"/>-->
+            <param name="ConversionPattern" value="[%color{%p}] %t ..%c{2}.%M:%L - %m%n"/>
         </layout>
     </appender>
 

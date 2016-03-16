@@ -16,25 +16,57 @@
  */
 package org.apache.jackrabbit.oak.plugins.document;
 
-import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.base.Preconditions.checkNotNull;
-import static com.google.common.collect.Iterables.filter;
-import static com.google.common.collect.Iterables.toArray;
-import static com.google.common.collect.Iterables.transform;
-import static java.util.Collections.singletonList;
-import static org.apache.jackrabbit.oak.api.CommitFailedException.MERGE;
-import static org.apache.jackrabbit.oak.commons.PathUtils.concat;
-import static org.apache.jackrabbit.oak.plugins.document.Collection.JOURNAL;
-import static org.apache.jackrabbit.oak.plugins.document.Collection.NODES;
-import static org.apache.jackrabbit.oak.plugins.document.DocumentMK.FAST_DIFF;
-import static org.apache.jackrabbit.oak.plugins.document.DocumentMK.MANY_CHILDREN_THRESHOLD;
-import static org.apache.jackrabbit.oak.plugins.document.JournalEntry.fillExternalChanges;
-import static org.apache.jackrabbit.oak.plugins.document.UpdateOp.Key;
-import static org.apache.jackrabbit.oak.plugins.document.UpdateOp.Operation;
-import static org.apache.jackrabbit.oak.plugins.document.util.Utils.asStringValueIterable;
-import static org.apache.jackrabbit.oak.plugins.document.util.Utils.getIdFromPath;
-import static org.apache.jackrabbit.oak.plugins.document.util.Utils.pathToId;
+import com.google.common.base.Function;
+import com.google.common.base.Predicates;
+import com.google.common.cache.Cache;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
+import com.google.common.collect.Sets;
+import org.apache.jackrabbit.oak.api.Blob;
+import org.apache.jackrabbit.oak.api.CommitFailedException;
+import org.apache.jackrabbit.oak.api.PropertyState;
+import org.apache.jackrabbit.oak.cache.CacheStats;
+import org.apache.jackrabbit.oak.commons.IOUtils;
+import org.apache.jackrabbit.oak.commons.PathUtils;
+import org.apache.jackrabbit.oak.commons.jmx.AnnotatedStandardMBean;
+import org.apache.jackrabbit.oak.commons.json.JsopReader;
+import org.apache.jackrabbit.oak.commons.json.JsopStream;
+import org.apache.jackrabbit.oak.commons.json.JsopTokenizer;
+import org.apache.jackrabbit.oak.commons.json.JsopWriter;
+import org.apache.jackrabbit.oak.commons.sort.StringSort;
+import org.apache.jackrabbit.oak.kernel.BlobSerializer;
+import org.apache.jackrabbit.oak.plugins.blob.BlobStoreBlob;
+import org.apache.jackrabbit.oak.plugins.blob.MarkSweepGarbageCollector;
+import org.apache.jackrabbit.oak.plugins.document.cache.CacheInvalidationStats;
+import org.apache.jackrabbit.oak.plugins.document.mongo.MongoBlobReferenceIterator;
+import org.apache.jackrabbit.oak.plugins.document.mongo.MongoDocumentStore;
+import org.apache.jackrabbit.oak.plugins.document.persistentCache.PersistentCache;
+import org.apache.jackrabbit.oak.plugins.document.util.LoggingDocumentStoreWrapper;
+import org.apache.jackrabbit.oak.plugins.document.util.StringValue;
+import org.apache.jackrabbit.oak.plugins.document.util.TimingDocumentStoreWrapper;
+import org.apache.jackrabbit.oak.plugins.document.util.Utils;
+import org.apache.jackrabbit.oak.spi.blob.BlobStore;
+import org.apache.jackrabbit.oak.spi.blob.GarbageCollectableBlobStore;
+import org.apache.jackrabbit.oak.spi.commit.ChangeDispatcher;
+import org.apache.jackrabbit.oak.spi.commit.CommitHook;
+import org.apache.jackrabbit.oak.spi.commit.CommitInfo;
+import org.apache.jackrabbit.oak.spi.commit.Observable;
+import org.apache.jackrabbit.oak.spi.commit.Observer;
+import org.apache.jackrabbit.oak.spi.state.AbstractNodeState;
+import org.apache.jackrabbit.oak.spi.state.NodeBuilder;
+import org.apache.jackrabbit.oak.spi.state.NodeState;
+import org.apache.jackrabbit.oak.spi.state.NodeStateDiff;
+import org.apache.jackrabbit.oak.spi.state.NodeStore;
+import org.apache.jackrabbit.oak.stats.Clock;
+import org.apache.jackrabbit.oak.util.PerfLogger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import javax.annotation.CheckForNull;
+import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
+import javax.management.NotCompliantMBeanException;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
@@ -60,59 +92,20 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
-import javax.management.NotCompliantMBeanException;
-
-import com.google.common.base.Function;
-import com.google.common.base.Predicates;
-import com.google.common.cache.Cache;
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
-import com.google.common.collect.Sets;
-
-import org.apache.jackrabbit.oak.api.PropertyState;
-import org.apache.jackrabbit.oak.commons.IOUtils;
-import org.apache.jackrabbit.oak.commons.jmx.AnnotatedStandardMBean;
-import org.apache.jackrabbit.oak.commons.json.JsopReader;
-import org.apache.jackrabbit.oak.commons.json.JsopTokenizer;
-import org.apache.jackrabbit.oak.plugins.blob.BlobStoreBlob;
-import org.apache.jackrabbit.oak.plugins.blob.MarkSweepGarbageCollector;
-import org.apache.jackrabbit.oak.plugins.document.cache.CacheInvalidationStats;
-import org.apache.jackrabbit.oak.plugins.document.mongo.MongoBlobReferenceIterator;
-import org.apache.jackrabbit.oak.plugins.document.mongo.MongoDocumentStore;
-import org.apache.jackrabbit.oak.plugins.document.persistentCache.PersistentCache;
-import org.apache.jackrabbit.oak.spi.blob.BlobStore;
-import org.apache.jackrabbit.oak.commons.json.JsopStream;
-import org.apache.jackrabbit.oak.commons.json.JsopWriter;
-import org.apache.jackrabbit.oak.commons.sort.StringSort;
-import org.apache.jackrabbit.oak.api.Blob;
-import org.apache.jackrabbit.oak.api.CommitFailedException;
-import org.apache.jackrabbit.oak.cache.CacheStats;
-import org.apache.jackrabbit.oak.commons.PathUtils;
-import org.apache.jackrabbit.oak.kernel.BlobSerializer;
-import org.apache.jackrabbit.oak.plugins.document.Branch.BranchCommit;
-import org.apache.jackrabbit.oak.plugins.document.util.LoggingDocumentStoreWrapper;
-import org.apache.jackrabbit.oak.plugins.document.util.StringValue;
-import org.apache.jackrabbit.oak.plugins.document.util.TimingDocumentStoreWrapper;
-import org.apache.jackrabbit.oak.plugins.document.util.Utils;
-import org.apache.jackrabbit.oak.spi.blob.GarbageCollectableBlobStore;
-import org.apache.jackrabbit.oak.spi.commit.ChangeDispatcher;
-import org.apache.jackrabbit.oak.spi.commit.Observable;
-import org.apache.jackrabbit.oak.spi.commit.CommitHook;
-import org.apache.jackrabbit.oak.spi.commit.CommitInfo;
-import org.apache.jackrabbit.oak.spi.commit.Observer;
-import org.apache.jackrabbit.oak.spi.state.AbstractNodeState;
-import org.apache.jackrabbit.oak.spi.state.NodeBuilder;
-import org.apache.jackrabbit.oak.spi.state.NodeState;
-import org.apache.jackrabbit.oak.spi.state.NodeStateDiff;
-import org.apache.jackrabbit.oak.spi.state.NodeStore;
-import org.apache.jackrabbit.oak.stats.Clock;
-import org.apache.jackrabbit.oak.util.PerfLogger;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.collect.Iterables.*;
+import static java.util.Collections.singletonList;
+import static org.apache.jackrabbit.oak.api.CommitFailedException.MERGE;
+import static org.apache.jackrabbit.oak.commons.PathUtils.concat;
+import static org.apache.jackrabbit.oak.plugins.document.Collection.JOURNAL;
+import static org.apache.jackrabbit.oak.plugins.document.Collection.NODES;
+import static org.apache.jackrabbit.oak.plugins.document.DocumentMK.FAST_DIFF;
+import static org.apache.jackrabbit.oak.plugins.document.DocumentMK.MANY_CHILDREN_THRESHOLD;
+import static org.apache.jackrabbit.oak.plugins.document.JournalEntry.fillExternalChanges;
+import static org.apache.jackrabbit.oak.plugins.document.UpdateOp.Key;
+import static org.apache.jackrabbit.oak.plugins.document.UpdateOp.Operation;
+import static org.apache.jackrabbit.oak.plugins.document.util.Utils.*;
 
 /**
  * Implementation of a NodeStore on {@link DocumentStore}.
@@ -231,7 +224,7 @@ public final class DocumentNodeStore
      * committed yet. The parents are not immediately persisted as this would
      * cause each commit to change all parents (including the root node), which
      * would limit write scalability.
-     *
+     * <p/>
      * Key: path, value: revision.
      */
     private final UnsavedModifications unsavedLastRevisions = new UnsavedModifications();
@@ -249,7 +242,7 @@ public final class DocumentNodeStore
 
     /**
      * The last known revision for each cluster instance.
-     *
+     * <p/>
      * Key: the machine id, value: revision.
      */
     private final Map<Integer, Revision> lastKnownRevision =
@@ -283,7 +276,8 @@ public final class DocumentNodeStore
      * retry cycle is done.
      * See {@link DocumentNodeStoreBranch#merge(CommitHook, CommitInfo)}.
      */
-    private final ReadWriteLock mergeLock = new ReentrantReadWriteLock();
+    // TODO: df@adobe.com
+    //private final ReadWriteLock mergeLock = new ReentrantReadWriteLock();
 
     /**
      * Enable using simple revisions (just a counter). This feature is useful
@@ -293,7 +287,7 @@ public final class DocumentNodeStore
 
     /**
      * The node cache.
-     *
+     * <p/>
      * Key: PathRev, value: DocumentNodeState
      */
     private final Cache<PathRev, DocumentNodeState> nodeCache;
@@ -301,7 +295,7 @@ public final class DocumentNodeStore
 
     /**
      * Child node cache.
-     *
+     * <p/>
      * Key: PathRev, value: Children
      */
     private final Cache<PathRev, DocumentNodeState.Children> nodeChildrenCache;
@@ -309,7 +303,7 @@ public final class DocumentNodeStore
 
     /**
      * Child doc cache.
-     *
+     * <p/>
      * Key: StringValue, value: Children
      */
     private final Cache<StringValue, NodeDocument.Children> docChildrenCache;
@@ -338,9 +332,9 @@ public final class DocumentNodeStore
             String id;
 
             String reference = blob.getReference();
-            if(reference != null){
+            if (reference != null) {
                 id = blobStore.getBlobId(reference);
-                if(id != null){
+                if (id != null) {
                     return id;
                 }
             }
@@ -361,7 +355,7 @@ public final class DocumentNodeStore
     private final VersionGarbageCollector versionGarbageCollector;
 
     private final JournalGarbageCollector journalGarbageCollector;
-    
+
     private final Executor executor;
 
     private final LastRevRecoveryAgent lastRevRecoveryAgent;
@@ -599,8 +593,8 @@ public final class DocumentNodeStore
      * {@link #done(Commit, boolean, CommitInfo)} or {@link #canceled(Commit)},
      * depending on the result of the commit.
      *
-     * @param base the base revision for the commit or <code>null</code> if the
-     *             commit should use the current head revision as base.
+     * @param base   the base revision for the commit or <code>null</code> if the
+     *               commit should use the current head revision as base.
      * @param branch the branch instance if this is a branch commit. The life
      *               time of this branch commit is controlled by the
      *               reachability of this parameter. Once {@code branch} is
@@ -626,8 +620,8 @@ public final class DocumentNodeStore
      * {@link #done(Commit, boolean, CommitInfo)} or {@link #canceled(Commit)},
      * depending on the result of the commit.
      *
-     * @param base the base revision for the commit or <code>null</code> if the
-     *             commit should use the current head revision as base.
+     * @param base             the base revision for the commit or <code>null</code> if the
+     *                         commit should use the current head revision as base.
      * @param numBranchCommits the number of branch commits to merge.
      * @return a new merge commit.
      */
@@ -741,7 +735,7 @@ public final class DocumentNodeStore
         nodeChildrenCache.invalidateAll();
     }
 
-    void invalidateNodeCache(String path, Revision revision){
+    void invalidateNodeCache(String path, Revision revision) {
         nodeCache.invalidate(new PathRev(path, revision));
     }
 
@@ -756,7 +750,7 @@ public final class DocumentNodeStore
     /**
      * Checks that revision x is newer than another revision.
      *
-     * @param x the revision to check
+     * @param x        the revision to check
      * @param previous the presumed earlier revision
      * @return true if x is newer
      */
@@ -798,9 +792,9 @@ public final class DocumentNodeStore
      * not be modified directly.
      *
      * @param path the path of the node.
-     * @param rev the read revision.
+     * @param rev  the read revision.
      * @return the node or <code>null</code> if the node does not exist at the
-     *          given revision.
+     * given revision.
      */
     @CheckForNull
     DocumentNodeState getNode(@Nonnull final String path, @Nonnull final Revision rev) {
@@ -812,7 +806,7 @@ public final class DocumentNodeStore
                 @Override
                 public DocumentNodeState call() throws Exception {
                     boolean nodeDoesNotExist = checkNodeNotExistsFromChildrenCache(path, rev);
-                    if (nodeDoesNotExist){
+                    if (nodeDoesNotExist) {
                         return missing;
                     }
                     DocumentNodeState n = readNode(path, rev);
@@ -832,8 +826,8 @@ public final class DocumentNodeStore
     }
 
     DocumentNodeState.Children getChildren(@Nonnull final DocumentNodeState parent,
-                              @Nullable final String name,
-                              final int limit)
+                                           @Nullable final String name,
+                                           final int limit)
             throws DocumentStoreException {
         if (checkNotNull(parent).hasNoChildren()) {
             return DocumentNodeState.NO_CHILDREN;
@@ -871,9 +865,9 @@ public final class DocumentNodeStore
      * ascending order.
      *
      * @param parent the parent node.
-     * @param name the name of the lower bound child node (exclusive) or
-     *              {@code null} if no lower bound is given.
-     * @param limit the maximum number of child nodes to return.
+     * @param name   the name of the lower bound child node (exclusive) or
+     *               {@code null} if no lower bound is given.
+     * @param limit  the maximum number of child nodes to return.
      * @return the children of {@code parent}.
      */
     DocumentNodeState.Children readChildren(DocumentNodeState parent,
@@ -888,7 +882,7 @@ public final class DocumentNodeStore
         // this gives us a chance to detect whether there are more
         // child nodes than requested.
         int rawLimit = (int) Math.min(Integer.MAX_VALUE, ((long) limit) + 1);
-        for (;;) {
+        for (; ; ) {
             docs = readChildDocs(path, name, rawLimit);
             int numReturned = 0;
             for (NodeDocument doc : docs) {
@@ -933,8 +927,8 @@ public final class DocumentNodeStore
      * child document returned is after the given name. That is, the name is the
      * lower exclusive bound.
      *
-     * @param path the path of the parent document.
-     * @param name the lower exclusive bound or {@code null}.
+     * @param path  the path of the parent document.
+     * @param name  the lower exclusive bound or {@code null}.
      * @param limit the maximum number of child documents to return.
      * @return the child documents.
      */
@@ -986,16 +980,16 @@ public final class DocumentNodeStore
         }
         Iterable<NodeDocument> head = filter(transform(c.childNames,
                 new Function<String, NodeDocument>() {
-            @Override
-            public NodeDocument apply(String name) {
-                String p = concat(path, name);
-                NodeDocument doc = store.find(Collection.NODES, Utils.getIdFromPath(p));
-                if (doc == null) {
-                    docChildrenCache.invalidate(key);
-                }
-                return doc;
-            }
-        }), Predicates.notNull());
+                    @Override
+                    public NodeDocument apply(String name) {
+                        String p = concat(path, name);
+                        NodeDocument doc = store.find(Collection.NODES, Utils.getIdFromPath(p));
+                        if (doc == null) {
+                            docChildrenCache.invalidate(key);
+                        }
+                        return doc;
+                    }
+                }), Predicates.notNull());
         Iterable<NodeDocument> it;
         if (c.isComplete) {
             it = head;
@@ -1021,16 +1015,16 @@ public final class DocumentNodeStore
      * {@code name} (exclusive).
      *
      * @param parent the parent node.
-     * @param name the name of the lower bound child node (exclusive) or
-     *             {@code null}, if the method should start with the first known
-     *             child node.
-     * @param limit the maximum number of child nodes to return.
+     * @param name   the name of the lower bound child node (exclusive) or
+     *               {@code null}, if the method should start with the first known
+     *               child node.
+     * @param limit  the maximum number of child nodes to return.
      * @return the child nodes.
      */
     @Nonnull
     Iterable<DocumentNodeState> getChildNodes(@Nonnull final DocumentNodeState parent,
-                    @Nullable final String name,
-                    final int limit) {
+                                              @Nullable final String name,
+                                              final int limit) {
         // Preemptive check. If we know there are no children then
         // return straight away
         if (checkNotNull(parent).hasNoChildren()) {
@@ -1071,15 +1065,14 @@ public final class DocumentNodeStore
     /**
      * Apply the changes of a node to the cache.
      *
-     * @param rev the commit revision
-     * @param path the path
-     * @param isNew whether this is a new node
+     * @param rev            the commit revision
+     * @param path           the path
+     * @param isNew          whether this is a new node
      * @param pendingLastRev whether the node has a pending _lastRev to write
      * @param isBranchCommit whether this is from a branch commit
-     * @param added the list of added child nodes
-     * @param removed the list of removed child nodes
-     * @param changed the list of changed child nodes.
-     *
+     * @param added          the list of added child nodes
+     * @param removed        the list of removed child nodes
+     * @param changed        the list of changed child nodes.
      */
     void applyChanges(Revision rev, String path,
                       boolean isNew, boolean pendingLastRev,
@@ -1175,11 +1168,11 @@ public final class DocumentNodeStore
      *
      * @param commit the updates to apply on the commit root document.
      * @return the document before the update was applied or <code>null</code>
-     *          if the update failed because of a collision.
-     * @throws DocumentStoreException  if the update fails with an error.
+     * if the update failed because of a collision.
+     * @throws DocumentStoreException if the update fails with an error.
      */
     @CheckForNull
-    NodeDocument updateCommitRoot(UpdateOp commit) throws DocumentStoreException  {
+    NodeDocument updateCommitRoot(UpdateOp commit) throws DocumentStoreException {
         // use batch commit when there are only revision and modified updates
         boolean batch = true;
         for (Map.Entry<Key, Operation> op : commit.getChanges().entrySet()) {
@@ -1199,7 +1192,7 @@ public final class DocumentNodeStore
     }
 
     private NodeDocument batchUpdateCommitRoot(UpdateOp commit)
-            throws DocumentStoreException  {
+            throws DocumentStoreException {
         try {
             return batchCommitQueue.updateDocument(commit).call();
         } catch (InterruptedException e) {
@@ -1233,7 +1226,9 @@ public final class DocumentNodeStore
         if (b != null) {
             return b;
         }
-        return new DocumentNodeStoreBranch(this, base, mergeLock);
+        // TODO: df@adobe.com OakMergeException
+        //return new DocumentNodeStoreBranch(this, base, mergeLock);
+        return new DocumentNodeStoreBranch(this, base, backgroundOperationLock);
     }
 
     @Nonnull
@@ -1384,8 +1379,8 @@ public final class DocumentNodeStore
      * @param base the base node to compare against.
      * @param diff handler of node state differences
      * @return {@code true} if the full diff was performed, or
-     *         {@code false} if it was aborted as requested by the handler
-     *         (see the {@link NodeStateDiff} contract for more details)
+     * {@code false} if it was aborted as requested by the handler
+     * (see the {@link NodeStateDiff} contract for more details)
      */
     boolean compare(@Nonnull final DocumentNodeState node,
                     @Nonnull final DocumentNodeState base,
@@ -1419,18 +1414,18 @@ public final class DocumentNodeStore
         if (from == null || to == null) {
             // TODO implement correct behavior if the node doesn't/didn't exist
             String msg = String.format("Diff is only supported if the node exists in both cases. " +
-                    "Node [%s], fromRev [%s] -> %s, toRev [%s] -> %s",
+                            "Node [%s], fromRev [%s] -> %s, toRev [%s] -> %s",
                     path, fromRev, from != null, toRev, to != null);
             throw new DocumentStoreException(msg);
         }
         String compactDiff = diffCache.getChanges(fromRev, toRev, path,
                 new DiffCache.Loader() {
-            @Override
-            public String call() {
-                // calculate the diff
-                return diffImpl(from, to);
-            }
-        });
+                    @Override
+                    public String call() {
+                        // calculate the diff
+                        return diffImpl(from, to);
+                    }
+                });
         JsopWriter writer = new JsopStream();
         diffProperties(from, to, writer);
         JsopTokenizer t = new JsopTokenizer(compactDiff);
@@ -1508,7 +1503,7 @@ public final class DocumentNodeStore
     @Override
     public Blob getBlob(String reference) {
         String blobId = blobStore.getBlobId(reference);
-        if(blobId != null){
+        if (blobId != null) {
             return new BlobStoreBlob(blobStore, blobId);
         }
         LOG.debug("No blobId found matching reference [{}]", reference);
@@ -1521,7 +1516,7 @@ public final class DocumentNodeStore
      * @param blobId the blobId of the blob.
      * @return the blob.
      */
-    public Blob getBlobFromBlobId(String blobId){
+    public Blob getBlobFromBlobId(String blobId) {
         return new BlobStoreBlob(blobStore, blobId);
     }
 
@@ -1572,7 +1567,9 @@ public final class DocumentNodeStore
 
     //----------------------< background operations >---------------------------
 
-    /** Used for testing only */
+    /**
+     * Used for testing only
+     */
     public void runBackgroundOperations() {
         runBackgroundUpdateOperations();
         runBackgroundReadOperations();
@@ -1637,7 +1634,9 @@ public final class DocumentNodeStore
         }
     }
 
-    /** OAK-2624 : background read operations are split from background update ops */
+    /**
+     * OAK-2624 : background read operations are split from background update ops
+     */
     private synchronized void internalRunBackgroundReadOperations() {
         long start = clock.getTime();
         // pull in changes from other cluster nodes
@@ -1684,7 +1683,7 @@ public final class DocumentNodeStore
      * Returns the cluster nodes currently known to be inactive.
      *
      * @return a map with the cluster id as key and the time in millis when it
-     *          was first seen inactive.
+     * was first seen inactive.
      */
     Map<Integer, Long> getInactiveClusterNodes() {
         return new HashMap<Integer, Long>(inactiveClusterNodes);
@@ -1804,7 +1803,7 @@ public final class DocumentNodeStore
                             LOG.trace("backgroundRead: docChildrenCache invalidation result: orig: {}, new: {} ", origSize, newSize);
                         }
                     } catch (Exception ioe) {
-                        LOG.error("backgroundRead: got IOException during external sorting/cache invalidation (as a result, invalidating entire cache): "+ioe, ioe);
+                        LOG.error("backgroundRead: got IOException during external sorting/cache invalidation (as a result, invalidating entire cache): " + ioe, ioe);
                         stats.cacheStats = store.invalidateCache();
                         docChildrenCache.invalidateAll();
                     }
@@ -1837,7 +1836,7 @@ public final class DocumentNodeStore
                             try {
                                 JournalEntry.applyTo(externalSort, diffCache, oldHead, headRevision);
                             } catch (Exception e1) {
-                                LOG.error("backgroundRead: Exception while processing external changes from journal: "+e1, e1);
+                                LOG.error("backgroundRead: Exception while processing external changes from journal: " + e1, e1);
                             }
                         }
                         stats.populateDiffCache = clock.getTime() - time;
@@ -1872,10 +1871,10 @@ public final class DocumentNodeStore
         @Override
         public String toString() {
             String cacheStatsMsg = "NOP";
-            if (cacheStats != null){
+            if (cacheStats != null) {
                 cacheStatsMsg = cacheStats.summaryReport();
             }
-            return  "ReadStats{" +
+            return "ReadStats{" +
                     "cacheStats:" + cacheStatsMsg +
                     ", head:" + readHead +
                     ", cache:" + cacheInvalidationTime +
@@ -1900,7 +1899,7 @@ public final class DocumentNodeStore
     private void cleanOrphanedBranches() {
         Branch b;
         while ((b = branches.pollOrphanedBranch()) != null) {
-            LOG.debug("Cleaning up orphaned branch with base revision: {}, " + 
+            LOG.debug("Cleaning up orphaned branch with base revision: {}, " +
                     "commits: {}", b.getBase(), b.getCommits());
             UpdateOp op = new UpdateOp(Utils.getIdFromPath("/"), false);
             for (Revision r : b.getCommits()) {
@@ -1910,7 +1909,7 @@ public final class DocumentNodeStore
             store.findAndUpdate(NODES, op);
         }
     }
-    
+
     private void cleanCollisions() {
         String id = Utils.getIdFromPath("/");
         NodeDocument root = store.find(NODES, id);
@@ -1926,7 +1925,7 @@ public final class DocumentNodeStore
                 // this revision and the revision is before the current
                 // head. That is, the collision cannot be related to commit
                 // which is progress.
-                if (branches.getBranchCommit(r) == null 
+                if (branches.getBranchCommit(r) == null
                         && isRevisionNewer(head, r)) {
                     NodeDocument.removeCollision(op, r);
                 }
@@ -1940,7 +1939,7 @@ public final class DocumentNodeStore
 
     private void backgroundSplit() {
         Revision head = getHeadRevision();
-        for (Iterator<String> it = splitCandidates.keySet().iterator(); it.hasNext();) {
+        for (Iterator<String> it = splitCandidates.keySet().iterator(); it.hasNext(); ) {
             String id = it.next();
             NodeDocument doc = store.find(Collection.NODES, id);
             if (doc == null) {
@@ -2032,7 +2031,7 @@ public final class DocumentNodeStore
      * Search for presence of child node as denoted by path in the children cache of parent
      *
      * @param path
-     * @param rev revision at which check is performed
+     * @param rev  revision at which check is performed
      * @return <code>true</code> if and only if the children cache entry for parent path is complete
      * and that list does not have the given child node. A <code>false</code> indicates that node <i>might</i>
      * exist
@@ -2319,7 +2318,7 @@ public final class DocumentNodeStore
         return (DocumentRootBuilder) builder;
     }
 
-    private static long now(){
+    private static long now() {
         return System.currentTimeMillis();
     }
 
@@ -2362,22 +2361,22 @@ public final class DocumentNodeStore
      * Creates and returns a MarkSweepGarbageCollector if the current BlobStore
      * supports garbage collection
      *
-     * @return garbage collector of the BlobStore supports GC otherwise null
      * @param blobGcMaxAgeInSecs
+     * @return garbage collector of the BlobStore supports GC otherwise null
      */
     @CheckForNull
     public MarkSweepGarbageCollector createBlobGarbageCollector(long blobGcMaxAgeInSecs) {
         MarkSweepGarbageCollector blobGC = null;
-        if(blobStore instanceof GarbageCollectableBlobStore){
+        if (blobStore instanceof GarbageCollectableBlobStore) {
             try {
                 blobGC = new MarkSweepGarbageCollector(
                         new DocumentBlobReferenceRetriever(this),
-                            (GarbageCollectableBlobStore) blobStore,
+                        (GarbageCollectableBlobStore) blobStore,
                         executor,
                         TimeUnit.SECONDS.toMillis(blobGcMaxAgeInSecs));
             } catch (IOException e) {
                 throw new RuntimeException("Error occurred while initializing " +
-                        "the MarkSweepGarbageCollector",e);
+                        "the MarkSweepGarbageCollector", e);
             }
         }
         return blobGC;
@@ -2389,7 +2388,7 @@ public final class DocumentNodeStore
         return mbean;
     }
 
-    private DocumentNodeStoreMBean createMBean(){
+    private DocumentNodeStoreMBean createMBean() {
         try {
             return new MBeanImpl();
         } catch (NotCompliantMBeanException e) {
@@ -2411,7 +2410,7 @@ public final class DocumentNodeStore
         }
 
         @Override
-        public String getHead(){
+        public String getHead() {
             return headRevision.toString();
         }
 
@@ -2448,7 +2447,7 @@ public final class DocumentNodeStore
         }
 
         @Override
-        public String formatRevision(String rev, boolean utc){
+        public String formatRevision(String rev, boolean utc) {
             Revision r = Revision.fromString(rev);
             final SimpleDateFormat sdf = new SimpleDateFormat(ISO_FORMAT);
             if (utc) {
@@ -2554,15 +2553,15 @@ public final class DocumentNodeStore
 
     /**
      * Returns an iterator for all the blob present in the store.
-     *
+     * <p/>
      * <p>In some cases the iterator might implement {@link java.io.Closeable}. So
      * callers should check for such iterator and close them</p>
      *
-     * @see org.apache.jackrabbit.oak.plugins.document.mongo.MongoBlobReferenceIterator
      * @return an iterator for all the blobs
+     * @see org.apache.jackrabbit.oak.plugins.document.mongo.MongoBlobReferenceIterator
      */
     public Iterator<Blob> getReferencedBlobsIterator() {
-        if(store instanceof MongoDocumentStore){
+        if (store instanceof MongoDocumentStore) {
             return new MongoBlobReferenceIterator(this, (MongoDocumentStore) store);
         }
         return new BlobReferenceIterator(this);
@@ -2589,7 +2588,7 @@ public final class DocumentNodeStore
     public JournalGarbageCollector getJournalGarbageCollector() {
         return journalGarbageCollector;
     }
-    
+
     @Nonnull
     public LastRevRecoveryAgent getLastRevRecoveryAgent() {
         return lastRevRecoveryAgent;
